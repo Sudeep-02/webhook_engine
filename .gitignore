@@ -1,3 +1,17 @@
-venv/
+# Python
 __pycache__/
+*.py[cod]
+venv/
+
+# Environment
 .env
+
+# Alembic (keep migrations, ignore compiled)
+alembic/versions/*.pyc
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/

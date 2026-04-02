@@ -1,0 +1,40 @@
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select
+from app.database import AsyncSessionLocal
+from app.models import WebhookEvent
+from app.services.queue_service import QueueService
+from app.core.logging_config import logger
+
+class RecoveryService:
+    @staticmethod
+    async def sweep_stuck_events():
+        """
+        Finds events stuck in Postgres (unsent) and puts them back in Redis.
+        """
+        async with AsyncSessionLocal() as db:
+            # Look for events that should have been sent by now
+            threshold = datetime.now(timezone.utc) - timedelta(minutes=2)
+            
+            # This query hits your 'idx_webhook_events_pending' Partial Index
+            stmt = (
+                select(WebhookEvent.id)
+                .where(WebhookEvent.is_delivered == False)
+                .where(WebhookEvent.created_at < threshold)
+                .limit(100) # Process in small batches to stay fast
+            )
+            
+            result = await db.execute(stmt)
+            stuck_ids = result.scalars().all()
+            
+            if not stuck_ids:
+                return 0
+
+            for event_id in stuck_ids:
+                # Re-inject the ID into the speed layer (Redis)
+                try:
+                    await QueueService.enqueue(event_id)
+                    logger.info("event_recovered", event_id=event_id)
+                except Exception:
+                    logger.error("recovery_enqueue_failed", event_id=event_id)
+            
+            return len(stuck_ids)
