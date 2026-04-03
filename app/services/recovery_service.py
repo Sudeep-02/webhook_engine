@@ -25,6 +25,7 @@ class RecoveryService:
             stmt = (
                 select(WebhookEvent.id)
                 .where(WebhookEvent.is_delivered == False)
+                .where(WebhookEvent.is_failed == False)
                 .where(WebhookEvent.created_at < threshold)
                 # MODIFIED: Added created_at filter to trigger Partition Pruning
                 .where(WebhookEvent.created_at >= search_window)
@@ -41,8 +42,8 @@ class RecoveryService:
                 # Re-inject the ID into the speed layer (Redis)
                 try:
                     await QueueService.enqueue(event_id)
-                    logger.info("event_recovered", event_id=event_id)
-                except Exception:
-                    logger.error("recovery_enqueue_failed", event_id=event_id)
+                    logger.info("event_recovered_to_queue", event_id=event_id)
+                except Exception as e: 
+                    logger.error("recovery_enqueue_failed", event_id=event_id, error=str(e))
 
             return len(stuck_ids)

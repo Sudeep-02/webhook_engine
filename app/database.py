@@ -11,7 +11,7 @@ engine = create_async_engine(
     # 1. Base pool size: How many permanent connections to keep open.
     # At 100 req/s, 20-30 connections can handle thousands of concurrent queries 
     # because asyncpg releases them back to the pool instantly after 'await'.
-    pool_size=90, 
+    pool_size=10, 
 
     # 2. Max Overflow: How many extra connections to open during a massive spike.
     # If a burst of 500 webhooks hits, this gives you a buffer.

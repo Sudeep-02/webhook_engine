@@ -10,7 +10,7 @@ class WebhookUser(HttpUser):
         self.client.post(
             "/events/",
             json={
-                "event_type": "payment.completed",
+                "event_type": "payment.success",
                 "payload": {"amount": 100, "currency": "USD"}, 
                 "idempotency_key": str(uuid.uuid4())
             },

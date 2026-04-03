@@ -68,7 +68,7 @@ class DeliveryAttempt(Base):
 
     # FKs in partitioned tables are tricky; usually, we link via ID
     # but cannot strictly enforce FK across different partitions in older PG versions.
-    event_id: Mapped[uuid.UUID] = mapped_column(UUID, index=True)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID)
     attempt_number: Mapped[int] = mapped_column(Integer)
     http_status: Mapped[int] = mapped_column(Integer, nullable=True)
     response_body: Mapped[dict] = mapped_column(JSONB, nullable=True)

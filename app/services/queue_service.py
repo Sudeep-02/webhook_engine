@@ -23,7 +23,7 @@ class QueueService:
         await redis_client.zadd(cls.QUEUE_KEY, {str(event_id): score})
 
     @classmethod
-    async def dequeue(cls) -> Optional[uuid.UUID]:
+    async def dequeue(cls) -> Optional[str]:
         """
         Atomically fetch the next event that is ready for processing.
         Only returns an event if its score <= current_time.

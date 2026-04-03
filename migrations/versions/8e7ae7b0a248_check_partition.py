@@ -1,8 +1,8 @@
-"""check_partitions
+"""check_partition
 
-Revision ID: ffd8048c2eb5
+Revision ID: 8e7ae7b0a248
 Revises: f50287dd7ff9
-Create Date: 2026-04-03 18:38:48.876106
+Create Date: 2026-04-03 18:52:20.652493
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'ffd8048c2eb5'
+revision: str = '8e7ae7b0a248'
 down_revision: Union[str, Sequence[str], None] = 'f50287dd7ff9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -25,7 +25,6 @@ def upgrade() -> None:
                existing_type=sa.TEXT(),
                type_=sa.String(),
                existing_nullable=True)
-    op.create_index(op.f('ix_delivery_attempts_event_id'), 'delivery_attempts', ['event_id'], unique=False)
     op.alter_column('subscriptions', 'created_at',
                existing_type=postgresql.TIMESTAMP(),
                type_=sa.DateTime(timezone=True),
@@ -42,7 +41,6 @@ def downgrade() -> None:
                type_=postgresql.TIMESTAMP(),
                existing_nullable=False,
                existing_server_default=sa.text('now()'))
-    op.drop_index(op.f('ix_delivery_attempts_event_id'), table_name='delivery_attempts')
     op.alter_column('delivery_attempts', 'error_message',
                existing_type=sa.String(),
                type_=sa.TEXT(),

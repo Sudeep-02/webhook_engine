@@ -22,6 +22,54 @@ services:
     volumes:
       - redisdata:/data
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: webhook-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports: ["9090:9090"]
+    networks: [default]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: webhook-grafana
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports: ["3000:3000"]
+    networks: [default]
+    restart: unless-stopped
+    depends_on: [prometheus]
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: webhook-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4318:4318" # OTLP HTTP receiver
+      - "4317:4317" # OTLP gRPC receiver
+    networks: [default]
+    restart: unless-stopped
+
+  worker:
+    build: . # This tells Docker to look for the 'Dockerfile' in this folder
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - cache
+
 volumes:
   pgdata:
   redisdata:
+  prometheus_data:
+  grafana_data:

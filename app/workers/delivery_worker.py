@@ -1,7 +1,8 @@
 import asyncio
 import time
+import json
 
-# import uuid
+from uuid import UUID
 from app.database import AsyncSessionLocal
 from app.models import WebhookEvent, DeliveryAttempt, Subscription
 from app.services.queue_service import QueueService
@@ -10,6 +11,8 @@ from app.services.webhook_delivery import WebhookDeliveryService
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
 from sqlalchemy import update
+from app.redis_client import redis_client
+
 # --- Infrastructure Imports ---
 from app.core.logging_config import logger
 from app.core.metrics import (
@@ -23,15 +26,25 @@ from app.core.metrics import (
 
 class DeliveryWorker:
     POLL_INTERVAL = 0.01
-
+    BATCH_SIZE = 100 # for postgres
+    FLUSH_INTERVAL = 5.0  # Force save every 5 seconds even if batch isn't full
+    SUBSCRIPTION_CACHE_TTL = 3600  # Cache for 1 hour
+    
     def __init__(self):
         self.running = False
-        self.semaphore = asyncio.Semaphore(85)
+        self.semaphore = asyncio.Semaphore(50)
+        # Buffers for Batching
+        self.success_buffer = []
+        self.failure_buffer = []
+        self.buffer_lock = asyncio.Lock()
 
     async def start(self):
         self.running = True
         active_workers_gauge.set(1)  # Track worker status
         logger.info("worker_started", message="Delivery worker started")
+        
+        # Start the background timer to flush small batches
+        asyncio.create_task(self._timer_flush())
 
         while self.running:
             try:
@@ -41,11 +54,78 @@ class DeliveryWorker:
                 await asyncio.sleep(2)
             await asyncio.sleep(self.POLL_INTERVAL)
 
+    async def _timer_flush(self):
+        """Background loop to ensure data is saved every few seconds."""
+        while self.running:
+            await asyncio.sleep(self.FLUSH_INTERVAL)
+            await self.flush_to_db()
+            
+    async def flush_to_db(self):
+        """The 'Senior' move: Bulk update PostgreSQL to save Disk I/O."""
+        async with self.buffer_lock:
+            to_success = list(self.success_buffer)
+            to_fail = list(self.failure_buffer)
+            self.success_buffer.clear()
+            self.failure_buffer.clear()
+
+        if not to_success and not to_fail:
+            return
+
+        try:
+            async with AsyncSessionLocal() as db:
+                if to_success:
+                    await db.execute(
+                        update(WebhookEvent)
+                        .where(WebhookEvent.id.in_(to_success))
+                        .values(is_delivered=True)
+                    )
+                if to_fail:
+                    await db.execute(
+                        update(WebhookEvent)
+                        .where(WebhookEvent.id.in_(to_fail))
+                        .values(is_failed=True)
+                    )
+                await db.commit()
+                logger.info("bulk_update_complete", success=len(to_success), failed=len(to_fail))
+        except Exception as e:
+            logger.error("flush_error", error=str(e))
+            
     async def stop(self):
-        """Added graceful stop for lifespan support"""
         self.running = False
+        await self.flush_to_db() # Final flush before shutting down
         active_workers_gauge.set(0)
         logger.info("worker_stopped", message="Delivery worker stopped")
+
+    async def get_subscription(self, event_type, db):
+        cache_key = f"sub_cache:{event_type}"
+        
+        try:
+            # redis_client has decode_responses=True, so this returns a string
+            cached_sub = await redis_client.get(cache_key)
+            if cached_sub:
+                return json.loads(cached_sub)
+        except Exception as e:
+            logger.error("cache_read_error", error=str(e))
+
+        # Cache Miss: Query Postgres
+        stmt = select(Subscription).where(Subscription.event_type == event_type)
+        result = await db.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if subscription:
+            sub_data = {
+                "target_url": subscription.target_url,
+                "secret": subscription.secret,
+                "event_type": subscription.event_type
+            }
+            try:
+                await redis_client.setex(
+                    cache_key, self.SUBSCRIPTION_CACHE_TTL, json.dumps(sub_data)
+                )
+            except Exception as e:
+                logger.error("cache_write_error", error=str(e))
+            return sub_data
+        return None
 
     async def process_one(self):
         event_id = await QueueService.dequeue()
@@ -53,14 +133,12 @@ class DeliveryWorker:
             return
 
         async with self.semaphore:
+            
             start_time = time.time()
-
-            # Define a search window for Partition Pruning.
-            # Since we only keep 7 days of data, we tell Postgres to ONLY look in the last 7 days.
             search_window = datetime.now(timezone.utc) - timedelta(days=7)
 
             async with AsyncSessionLocal() as db:
-                # This is CRITICAL. Without 'created_at >=', Postgres scans all 30M+ rows.
+                #  Without 'created_at >=', Postgres scans all 30M+ rows.
                 stmt = select(WebhookEvent).where(
                     WebhookEvent.id == event_id,
                     WebhookEvent.created_at >= search_window,
@@ -72,27 +150,27 @@ class DeliveryWorker:
                 if not event or event.is_delivered:
                     return
 
-                sub_result = await db.execute(
-                    select(Subscription).where(
-                        Subscription.event_type == event.event_type
-                    )
-                )
-                subscription = sub_result.scalar_one_or_none()
-
+                subscription = await self.get_subscription(event.event_type, db)
+                
                 if not subscription:
                     logger.warning(
                         "subscription_not_found",
                         event_type=event.event_type,
                         event_id=event_id,
                     )
-                    # Update the DB so it's no longer "Pending"
-                    async with AsyncSessionLocal() as session:
-                        await session.execute(
-                            update(WebhookEvent)
-                            .where(WebhookEvent.id == event_id)
-                            .values(is_failed=True) # This removes it from the 'Pending' index
-                        )
-                        await session.commit()
+                    webhook_failed_total.labels(
+                        event_type=event.event_type, 
+                        reason="subscription_not_found"
+                    ).inc()
+                    
+                    
+                    # this move request to dead queue in webhook even and request is deleted from index 
+                    # event.is_failed = True
+                    # await db.commit()
+                    
+                    #CHANGED : Move to failure buffer instead of immediate commit
+                    async with self.buffer_lock:
+                        self.failure_buffer.append(event_id)
                     return
 
                 # Efficiently count attempts using the partition key
@@ -116,9 +194,9 @@ class DeliveryWorker:
                     error,
                     resp_headers,
                 ) = await WebhookDeliveryService.deliver(
-                    url=subscription.target_url,
+                   url=subscription["target_url"],
                     payload=event.payload,  # Kept your JSONB direct access
-                    secret=subscription.secret,
+                    secret=subscription["secret"],
                     event_type=event.event_type,
                 )
 
@@ -136,6 +214,7 @@ class DeliveryWorker:
                         error_message=error,
                     )
                 )
+                await db.commit()
 
                 # Calculate and record latency metric
                 latency = time.time() - start_time
@@ -145,8 +224,15 @@ class DeliveryWorker:
 
                 # --- Outcome Handling ---
                 if 200 <= status < 300:
-                    event.is_delivered = True
+                    # event.is_delivered = True
+                    
                     webhook_delivered_total.labels(event_type=event.event_type).inc()
+                    
+                    # 2. Add to Success Buffer (This replaces event.is_delivered = True)
+                    async with self.buffer_lock:
+                        self.success_buffer.append(event_id)
+                        
+                        
                     logger.info(
                         "webhook_delivered",
                         event_id=event_id,
@@ -157,7 +243,7 @@ class DeliveryWorker:
 
                 elif RetryStrategy.should_retry(attempt_number, status):
                     delay = RetryStrategy.calculate_delay(attempt_number, resp_headers)
-                    await QueueService.enqueue(event_id, delay)
+                    await QueueService.enqueue(UUID(event_id), delay)
 
                     webhook_retry_total.labels(
                         event_type=event.event_type, attempt_number=attempt_number
@@ -173,7 +259,7 @@ class DeliveryWorker:
                 else:
                     # Permanent failure or max retries reached
                     # We mark it as is_failed = True so the RecoveryService ignores it forever.
-                    event.is_failed = True
+                    # event.is_failed = True
 
                     webhook_failed_total.labels(
                         event_type=event.event_type,
@@ -181,6 +267,10 @@ class DeliveryWorker:
                         if attempt_number >= RetryStrategy.MAX_RETRIES
                         else "status_failure",
                     ).inc()
+                    
+                    # 4. Add to Failure Buffer (This replaces event.is_failed = True)
+                    async with self.buffer_lock:
+                        self.failure_buffer.append(event_id)
 
                     logger.error(
                         "webhook_dead_lettered",
@@ -190,4 +280,6 @@ class DeliveryWorker:
                         error=error,
                     )
 
-                await db.commit()
+                # Trigger flush if buffer hits threshold
+                if len(self.success_buffer) + len(self.failure_buffer) >= self.BATCH_SIZE:
+                    asyncio.create_task(self.flush_to_db())

@@ -34,6 +34,14 @@ from app.core.metrics import (
     redis_up_gauge,
 )
 
+# --- NEW: OpenTelemetry Imports for Jaeger ---
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Initialize the scheduler
 scheduler = AsyncIOScheduler()
@@ -59,12 +67,24 @@ worker_task = None
 async def lifespan(app: FastAPI):
     global worker_task
     logger.info("application_startup", message="🚀 Starting Webhook Engine...")
+    
+    
+    #Setup OpenTelemetry Tracing (Sends data to Jaeger)
+    resource = Resource(attributes={"service.name": "webhook-engine"})
+    provider = TracerProvider(resource=resource)
 
-    # NEW: 1. Database Partitioning & Maintenance logic
+    # Send traces to localhost:4317 (where your Jaeger container is listening)
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True))
+    provider.add_span_processor(processor)
+    trace.set_tracer_provider(provider)
+    logger.info("tracing_init", message=" OpenTelemetry Tracing connected to Jaeger.")
+    # =========================================================
+
+    # Database Partitioning & Maintenance logic
     # This ensures today's table exists immediately on startup
     try:
         await run_partition_maintenance()
-        logger.info("partition_init", message="✅ Database partitions verified.")
+        logger.info("partition_init", message="Database partitions verified.")
     except Exception as e:
         logger.error("partition_init_failed", error=str(e))
 
@@ -72,10 +92,10 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(run_partition_maintenance, "cron", hour=0, minute=5)
     scheduler.start()
 
-    # 2. Start Metrics Server (Port 8001)
+    #Start Metrics Server (Port 8001)
     start_metrics_server(port=8001)
-
-    # 3. Check Redis Connection & Update Gauge
+    
+    #Check Redis Connection & Update Gauge
     redis_is_ok = await get_redis_status()
     if redis_is_ok:
         redis_up_gauge.set(1)
@@ -84,10 +104,10 @@ async def lifespan(app: FastAPI):
         redis_up_gauge.set(0)
         logger.error("redis_error", message="Warning: Redis is not available")
 
-    # 4. Start Background Delivery Worker
+    #Start Background Delivery Worker
     worker_task = asyncio.create_task(worker.start())
 
-    # 2. Start the Recovery Sweeper Loop
+    #Start the Recovery Sweeper Loop
     async def recovery_loop():
         while True:
             try:
@@ -115,13 +135,19 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    # 5. Cleanup Connections
+    #Cleanup Connections
     await redis_client.aclose()
     await engine.dispose()
     logger.info("cleanup_complete", message="✨ Cleanup complete.")
 
 
 app = FastAPI(lifespan=lifespan, title="Reliable Webhook Engine")
+
+
+instrumentator = Instrumentator().instrument(app)
+
+# Automatically trace all FastAPI routes
+FastAPIInstrumentor.instrument_app(app)
 
 # --- Middleware Stack ---
 app.add_middleware(CorrelationIDMiddleware)
@@ -324,3 +350,5 @@ async def get_event_attempts(
         .order_by(DeliveryAttempt.attempt_number)
     )
     return result.scalars().all()
+
+
