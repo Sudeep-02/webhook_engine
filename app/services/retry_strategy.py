@@ -1,17 +1,17 @@
 import random
 import logging
-import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Optional
 
 logger = logging.getLogger("webhook_engine")
 
+
 class RetryStrategy:
     MAX_RETRIES = 5
     BASE_DELAY = 1.0
     MAX_DELAY = 300.0
-    
+
     @classmethod
     def get_retry_after(cls, response_headers: Optional[dict]) -> Optional[float]:
         """
@@ -21,9 +21,11 @@ class RetryStrategy:
         """
         if not response_headers:
             return None
-            
+
         # Case-insensitive header fetch
-        retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
+        retry_after = response_headers.get("Retry-After") or response_headers.get(
+            "retry-after"
+        )
         if not retry_after:
             return None
 
@@ -43,7 +45,9 @@ class RetryStrategy:
                 return None
 
     @classmethod
-    def calculate_delay(cls, attempt: int, response_headers: Optional[dict] = None) -> float:
+    def calculate_delay(
+        cls, attempt: int, response_headers: Optional[dict] = None
+    ) -> float:
         """
         Calculates how long to wait before the next delivery attempt.
         Priority: 1. Retry-After Header | 2. Full Jitter Exponential Backoff
@@ -57,10 +61,10 @@ class RetryStrategy:
         # 2. Fallback to Full Jitter Exponential Backoff (if no header or invalid)
         if attempt >= cls.MAX_RETRIES:
             return 0.0
-        
+
         # Exponential backoff: 2, 4, 8, 16, 32...
-        backoff_limit = min(cls.MAX_DELAY, cls.BASE_DELAY * (2 ** attempt))
-        
+        backoff_limit = min(cls.MAX_DELAY, cls.BASE_DELAY * (2**attempt))
+
         # Full Jitter: random range between 0 and backoff_limit
         # This is the most efficient way to de-synchronize overlapping retries
         return max(1.0, random.uniform(0, backoff_limit))
@@ -71,16 +75,18 @@ class RetryStrategy:
         Logic gate to determine if an event stays in the queue or is dropped.
         """
         if attempt >= cls.MAX_RETRIES:
-            logger.warning(f"Max retries ({cls.MAX_RETRIES}) reached. Abandoning event.")
+            logger.warning(
+                f"Max retries ({cls.MAX_RETRIES}) reached. Abandoning event."
+            )
             return False
-        
+
         # Retryable statuses:
         # 429 = Too Many Requests (Rate Limited)
         # 5xx = Server-side errors
         # 0   = Network timeouts / Connection dropped
         if http_status == 429 or http_status >= 500 or http_status == 0:
             return True
-            
+
         # Terminal Client Errors (400, 401, 403, 404)
         # We don't retry these because the payload or URL is wrong and won't change.
         if 400 <= http_status < 500:
