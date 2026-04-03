@@ -9,7 +9,7 @@ from app.services.retry_strategy import RetryStrategy
 from app.services.webhook_delivery import WebhookDeliveryService
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
-
+from sqlalchemy import update
 # --- Infrastructure Imports ---
 from app.core.logging_config import logger
 from app.core.metrics import (
@@ -77,14 +77,22 @@ class DeliveryWorker:
                         Subscription.event_type == event.event_type
                     )
                 )
-                sub = sub_result.scalar_one_or_none()
+                subscription = sub_result.scalar_one_or_none()
 
-                if not sub:
+                if not subscription:
                     logger.warning(
                         "subscription_not_found",
                         event_type=event.event_type,
                         event_id=event_id,
                     )
+                    # Update the DB so it's no longer "Pending"
+                    async with AsyncSessionLocal() as session:
+                        await session.execute(
+                            update(WebhookEvent)
+                            .where(WebhookEvent.id == event_id)
+                            .values(is_failed=True) # This removes it from the 'Pending' index
+                        )
+                        await session.commit()
                     return
 
                 # Efficiently count attempts using the partition key
@@ -108,9 +116,9 @@ class DeliveryWorker:
                     error,
                     resp_headers,
                 ) = await WebhookDeliveryService.deliver(
-                    url=sub.target_url,
+                    url=subscription.target_url,
                     payload=event.payload,  # Kept your JSONB direct access
-                    secret=sub.secret,
+                    secret=subscription.secret,
                     event_type=event.event_type,
                 )
 

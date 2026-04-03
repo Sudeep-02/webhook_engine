@@ -26,6 +26,19 @@ if config.config_file_name is not None:
 # target_metadata = mymodel.Base.metadata
 target_metadata = Base.metadata
 
+
+# 1. ADD THE FILTER FUNCTION HERE
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Tells Alembic to ignore partition tables created by our PartitionManager.
+    """
+    if type_ == "table":
+        # Ignore any tables starting with our partition prefixes
+        if name.startswith("webhook_events_202") or name.startswith("delivery_attempts_202"):
+            return False
+    return True
+
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
@@ -50,6 +63,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -57,7 +71,7 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata,include_object=include_object)
 
     with context.begin_transaction():
         context.run_migrations()
