@@ -54,5 +54,5 @@ class IdempotencyService:
         #     }
         # return None
 
-        # Redis returns bytes or None; we convert to int for our Postgres logic
-        return int(val) if val is not None else None
+        # Redis returns bytes or None;
+        return val if val is not None else None

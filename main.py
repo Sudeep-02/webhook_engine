@@ -173,6 +173,8 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
     correlation_id = get_correlation_id()
     start_time = time.time()
 
+    
+    
     # Log incoming request with correlation context
     logger.info(
         "webhook_received",
@@ -194,12 +196,18 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
         )
         return {"id": existing_id, "idempotent": True, "message": "Duplicate request"}
 
+
+    now = datetime.now(timezone.utc)
+    stable_timestamp = now.replace(second=0, microsecond=0)
+    
+    
     # 2. Database & Queue Layer
     try:
         async with db.begin():
             db_event = WebhookEvent(
                 id=uuid6.uuid7(),
                 idempotency_key=event.idempotency_key,
+                created_at=stable_timestamp,
                 event_type=event.event_type,
                 payload=event.payload,
             )

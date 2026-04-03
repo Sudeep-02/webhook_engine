@@ -7,12 +7,6 @@ from app.core.logging_config import logger
 
 
 class PartitionManager:
-    """
-    Handles the lifecycle of PostgreSQL partitions.
-    At 1M requests/day, we use Daily partitions to keep index sizes small
-    enough to fit in RAM/CPU Cache.
-    """
-
     def __init__(self, session: AsyncSession):
         self.session = session
 
@@ -21,24 +15,27 @@ class PartitionManager:
         try:
             await self.create_future_partitions()
             await self.cleanup_old_partitions()
+            await self.session.commit()
             logger.info(
                 "partition_sync_successful", message="Daily maintenance complete."
             )
         except Exception as e:
-            logger.error("partition_sync_failed", error=str(e))
             await self.session.rollback()
+            logger.error("partition_sync_failed", error=str(e))
+            raise e
 
     async def create_future_partitions(self):
-        """
-        Creates partitions for Today, Tomorrow, and Day After Tomorrow.
-        This buffer prevents 'No Partition' errors during server reboots.
-        """
+        now = datetime.now(timezone.utc)
+        today_midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        
         for days_ahead in [0, 1, 2]:
-            target_date = datetime.now(timezone.utc) + timedelta(days=days_ahead)
-
-            suffix = target_date.strftime("%Y_%m_%d")
-            start_range = target_date.strftime("%Y-%m-%d")
-            end_range = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            target_start = today_midnight + timedelta(days=days_ahead)
+            target_end = target_start + timedelta(days=1)
+            
+            suffix = target_start.strftime("%Y_%m_%d")
+            # Format: '2026-04-03 00:00:00+00'
+            start_range = target_start.strftime("%Y-%m-%d %H:%M:%S%z")
+            end_range = target_end.strftime("%Y-%m-%d %H:%M:%S%z")
 
             for parent_table in ["webhook_events", "delivery_attempts"]:
                 partition_name = f"{parent_table}_{suffix}"
