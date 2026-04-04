@@ -2,7 +2,7 @@ import time
 from typing import Optional
 from app.redis_client import redis_client
 import uuid
-
+from typing import Optional, Any, Awaitable, cast
 
 class QueueService:
     """
@@ -25,31 +25,26 @@ class QueueService:
     @classmethod
     async def dequeue(cls) -> Optional[str]:
         """
-        Atomically fetch the next event that is ready for processing.
-        Only returns an event if its score <= current_time.
+        Atomically fetch and remove the next ready event using a Lua script.
+        This prevents race conditions between multiple workers.
         """
         now = time.time()
-
-        # 1. Peek at the first item to see if it's ready
-        result = await redis_client.zrange(cls.QUEUE_KEY, 0, 0, withscores=True)
-
-        if not result:
-            return None
-
-        event_id_str, score = result[0]
-
-        # 2. Check if the scheduled time has arrived
-        if score > now:
-            return None
-
-        # 3. Atomically remove it to ensure no other worker grabs it
-        # zrem returns 1 if the item was actually removed
-        removed = await redis_client.zrem(cls.QUEUE_KEY, event_id_str)
-
-        if removed:
-            return event_id_str
-
-        return None
+        
+        # Lua Script: 
+        # 1. Get the first element and its score.
+        # 2. If it exists and score <= now, REMOVE it and RETURN it.
+        # 3. Otherwise, return nil.
+        lua_script = """
+        local val = redis.call('zrange', KEYS[1], 0, 0, 'withscores')
+        if val[1] ~= nil and tonumber(val[2]) <= tonumber(ARGV[1]) then
+            redis.call('zrem', KEYS[1], val[1])
+            return val[1]
+        end
+        return nil
+        """
+        
+        result = await cast(Awaitable[Any], redis_client.eval(lua_script, 1, cls.QUEUE_KEY, now))
+        return result # Returns event_id string or None
 
     @classmethod
     async def get_queue_depth(cls) -> int:

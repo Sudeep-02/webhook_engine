@@ -3,7 +3,7 @@ import uuid
 
 
 class WebhookUser(HttpUser):
-    wait_time = between(0.1, 0.5)
+    wait_time = between(0.02, 0.08)
 
     @task(3)
     def create_event(self):

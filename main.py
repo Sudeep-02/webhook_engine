@@ -25,7 +25,7 @@ from app.core.metrics import (
     redis_up_gauge,
 )
 
-# --- NEW: OpenTelemetry Imports for Jaeger ---
+# # --- NEW: OpenTelemetry Imports for Jaeger ---
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -183,15 +183,7 @@ app.add_middleware(
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-
     mode = os.getenv("APP_MODE", "api")
     port = int(os.getenv("PORT", 8000))
-
-    if mode == "api":
-        logger.info("starting_api_server", port=port)
-        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False, workers=1)
-    else:
-        # --- FIXED: Use uvicorn even for the worker to trigger the lifespan ---
-        logger.info("starting_worker_mode", port=port)
-        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False, workers=1)
+    # Using the string import "main:app" is correct for reloads and worker management
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False, workers=1)
