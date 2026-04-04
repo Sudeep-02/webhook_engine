@@ -43,7 +43,9 @@ class RecoveryService:
                 try:
                     await QueueService.enqueue(event_id)
                     logger.info("event_recovered_to_queue", event_id=event_id)
-                except Exception as e: 
-                    logger.error("recovery_enqueue_failed", event_id=event_id, error=str(e))
+                except Exception as e:
+                    logger.error(
+                        "recovery_enqueue_failed", event_id=event_id, error=str(e)
+                    )
 
             return len(stuck_ids)

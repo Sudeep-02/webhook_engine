@@ -62,8 +62,8 @@ services:
     restart: always
     environment:
       - APP_MODE=worker
-      - DB_POOL_SIZE=20
-      - DB_MAX_OVERFLOW=60 # <--- CRITICAL: Tells main.py to run the Delivery Loop
+      - DB_POOL_SIZE=45
+      - DB_MAX_OVERFLOW=20 # <--- CRITICAL: Tells main.py to run the Delivery Loop
     env_file:
       - .env
     depends_on:

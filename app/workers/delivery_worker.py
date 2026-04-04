@@ -26,10 +26,10 @@ from app.core.metrics import (
 
 class DeliveryWorker:
     POLL_INTERVAL = 0.01
-    BATCH_SIZE = 100 # for postgres
+    BATCH_SIZE = 100  # for postgres
     FLUSH_INTERVAL = 5.0  # Force save every 5 seconds even if batch isn't full
     SUBSCRIPTION_CACHE_TTL = 3600  # Cache for 1 hour
-    
+
     def __init__(self):
         self.running = False
         self.semaphore = asyncio.Semaphore(100)
@@ -42,7 +42,7 @@ class DeliveryWorker:
         self.running = True
         active_workers_gauge.set(1)  # Track worker status
         logger.info("worker_started", message="Delivery worker started")
-        
+
         # Start the background timer to flush small batches
         asyncio.create_task(self._timer_flush())
 
@@ -59,7 +59,7 @@ class DeliveryWorker:
         while self.running:
             await asyncio.sleep(self.FLUSH_INTERVAL)
             await self.flush_to_db()
-            
+
     async def flush_to_db(self):
         """The 'Senior' move: Bulk update PostgreSQL to save Disk I/O."""
         async with self.buffer_lock:
@@ -86,19 +86,21 @@ class DeliveryWorker:
                         .values(is_failed=True)
                     )
                 await db.commit()
-                logger.info("bulk_update_complete", success=len(to_success), failed=len(to_fail))
+                logger.info(
+                    "bulk_update_complete", success=len(to_success), failed=len(to_fail)
+                )
         except Exception as e:
             logger.error("flush_error", error=str(e))
-            
+
     async def stop(self):
         self.running = False
-        await self.flush_to_db() # Final flush before shutting down
+        await self.flush_to_db()  # Final flush before shutting down
         active_workers_gauge.set(0)
         logger.info("worker_stopped", message="Delivery worker stopped")
 
     async def get_subscription(self, event_type, db):
         cache_key = f"sub_cache:{event_type}"
-        
+
         try:
             # redis_client has decode_responses=True, so this returns a string
             cached_sub = await redis_client.get(cache_key)
@@ -116,7 +118,7 @@ class DeliveryWorker:
             sub_data = {
                 "target_url": subscription.target_url,
                 "secret": subscription.secret,
-                "event_type": subscription.event_type
+                "event_type": subscription.event_type,
             }
             try:
                 await redis_client.setex(
@@ -133,7 +135,6 @@ class DeliveryWorker:
             return
 
         async with self.semaphore:
-            
             start_time = time.time()
             search_window = datetime.now(timezone.utc) - timedelta(days=7)
 
@@ -151,7 +152,7 @@ class DeliveryWorker:
                     return
 
                 subscription = await self.get_subscription(event.event_type, db)
-                
+
                 if not subscription:
                     logger.warning(
                         "subscription_not_found",
@@ -159,16 +160,14 @@ class DeliveryWorker:
                         event_id=event_id,
                     )
                     webhook_failed_total.labels(
-                        event_type=event.event_type, 
-                        reason="subscription_not_found"
+                        event_type=event.event_type, reason="subscription_not_found"
                     ).inc()
-                    
-                    
-                    # this move request to dead queue in webhook even and request is deleted from index 
+
+                    # this move request to dead queue in webhook even and request is deleted from index
                     # event.is_failed = True
                     # await db.commit()
-                    
-                    #CHANGED : Move to failure buffer instead of immediate commit
+
+                    # CHANGED : Move to failure buffer instead of immediate commit
                     async with self.buffer_lock:
                         self.failure_buffer.append(event_id)
                     return
@@ -194,7 +193,7 @@ class DeliveryWorker:
                     error,
                     resp_headers,
                 ) = await WebhookDeliveryService.deliver(
-                   url=subscription["target_url"],
+                    url=subscription["target_url"],
                     payload=event.payload,  # Kept your JSONB direct access
                     secret=subscription["secret"],
                     event_type=event.event_type,
@@ -225,14 +224,13 @@ class DeliveryWorker:
                 # --- Outcome Handling ---
                 if 200 <= status < 300:
                     # event.is_delivered = True
-                    
+
                     webhook_delivered_total.labels(event_type=event.event_type).inc()
-                    
+
                     # 2. Add to Success Buffer (This replaces event.is_delivered = True)
                     async with self.buffer_lock:
                         self.success_buffer.append(event_id)
-                        
-                        
+
                     logger.info(
                         "webhook_delivered",
                         event_id=event_id,
@@ -267,7 +265,7 @@ class DeliveryWorker:
                         if attempt_number >= RetryStrategy.MAX_RETRIES
                         else "status_failure",
                     ).inc()
-                    
+
                     # 4. Add to Failure Buffer (This replaces event.is_failed = True)
                     async with self.buffer_lock:
                         self.failure_buffer.append(event_id)
@@ -281,5 +279,8 @@ class DeliveryWorker:
                     )
 
                 # Trigger flush if buffer hits threshold
-                if len(self.success_buffer) + len(self.failure_buffer) >= self.BATCH_SIZE:
+                if (
+                    len(self.success_buffer) + len(self.failure_buffer)
+                    >= self.BATCH_SIZE
+                ):
                     asyncio.create_task(self.flush_to_db())

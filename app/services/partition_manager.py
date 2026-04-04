@@ -27,11 +27,11 @@ class PartitionManager:
     async def create_future_partitions(self):
         now = datetime.now(timezone.utc)
         today_midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        
+
         for days_ahead in [0, 1, 2]:
             target_start = today_midnight + timedelta(days=days_ahead)
             target_end = target_start + timedelta(days=1)
-            
+
             suffix = target_start.strftime("%Y_%m_%d")
             # Format: '2026-04-03 00:00:00+00'
             start_range = target_start.strftime("%Y-%m-%d %H:%M:%S%z")

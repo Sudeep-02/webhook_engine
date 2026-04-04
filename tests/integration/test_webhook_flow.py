@@ -8,6 +8,7 @@ from app.models import WebhookEvent
 from app.database import AsyncSessionLocal
 from app.redis_client import redis_client
 
+
 @pytest.mark.asyncio
 async def test_create_event_success(integration_client):
     """
@@ -18,7 +19,7 @@ async def test_create_event_success(integration_client):
     payload = {
         "event_type": "order.created",
         "payload": {"order_id": "123", "total": 50.00},
-        "idempotency_key": idempotency_key
+        "idempotency_key": idempotency_key,
     }
 
     # 1. Action
@@ -48,14 +49,14 @@ async def test_create_event_success(integration_client):
 async def test_idempotency_collision_handling(integration_client):
     """
     Test 2: The Collision Flow (Issue #2 Fix)
-    Verifies that sending the same key twice triggers the 'except' block 
+    Verifies that sending the same key twice triggers the 'except' block
     and returns the ORIGINAL ID instead of creating a duplicate.
     """
     idempotency_key = "shared-key-123"
     payload = {
         "event_type": "payment.processed",
         "payload": {"amount": 10},
-        "idempotency_key": idempotency_key
+        "idempotency_key": idempotency_key,
     }
 
     # 1. First Request (Creates the record)
@@ -65,9 +66,9 @@ async def test_idempotency_collision_handling(integration_client):
 
     # 2. Second Request (Same key, same 'deterministic' timestamp second)
     res2 = await integration_client.post("/events/", json=payload)
-    
+
     # 3. Assertions
-    # Note: Depending on your main.py, this might return 201 or 200, 
+    # Note: Depending on your main.py, this might return 201 or 200,
     # but the key is that 'idempotent' must be True.
     assert res2.status_code in [200, 201]
     data2 = res2.json()
@@ -95,9 +96,9 @@ async def test_invalid_payload_error(integration_client):
     """
     bad_payload = {
         "event_type": "test",
-        "payload": '{"this_is": "a_string_not_a_dict"}', # Wrong type
-        "idempotency_key": "bad-payload-key"
+        "payload": '{"this_is": "a_string_not_a_dict"}',  # Wrong type
+        "idempotency_key": "bad-payload-key",
     }
-    
+
     response = await integration_client.post("/events/", json=bad_payload)
     assert response.status_code == 422
