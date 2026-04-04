@@ -32,7 +32,7 @@ class DeliveryWorker:
     
     def __init__(self):
         self.running = False
-        self.semaphore = asyncio.Semaphore(50)
+        self.semaphore = asyncio.Semaphore(100)
         # Buffers for Batching
         self.success_buffer = []
         self.failure_buffer = []

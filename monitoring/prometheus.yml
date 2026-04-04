@@ -2,6 +2,13 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: "webhook_app"
+  - job_name: "webhook_api"
     static_configs:
-      - targets: ["host.docker.internal:8001"]
+      - targets: ["api:8000"] # The API metrics
+
+  - job_name: "webhook_workers"
+    dns_sd_configs:
+      - names:
+          - "worker" # This automatically finds ALL scaled workers (worker_1, worker_2, etc.)
+        type: "A"
+        port: 8000

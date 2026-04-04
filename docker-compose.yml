@@ -3,6 +3,7 @@ services:
     image: postgres:18-alpine
     container_name: webhook_postgres
     restart: always
+    command: postgres -c max_connections=300
     env_file: # <--- Add this line
       - .env
     environment:
@@ -13,14 +14,63 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d webhook_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  locust:
+    image: locustio/locust
+    volumes:
+      - ./tests/load:/mnt/locust
+    command: -f /mnt/locust/locustfile.py --host http://api:8000
+    ports:
+      - "8089:8089" # Locust Web UI
+    networks:
+      - default
 
   cache:
     image: redis:8-alpine
+    container_name: webhook_redis
     restart: always
     ports:
       - "6379:6379"
     volumes:
       - redisdata:/data
+  api:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 --loop uvloop
+    restart: always
+    environment:
+      - APP_MODE=api
+      - DB_POOL_SIZE=50
+      - DB_MAX_OVERFLOW=20 # Explicitly set API mode
+    env_file:
+      - .env
+    ports:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  worker:
+    build: .
+    # container_name: webhook_worker
+    restart: always
+    environment:
+      - APP_MODE=worker
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=60 # <--- CRITICAL: Tells main.py to run the Delivery Loop
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:latest
@@ -58,15 +108,6 @@ services:
       - "4317:4317" # OTLP gRPC receiver
     networks: [default]
     restart: unless-stopped
-
-  worker:
-    build: . # This tells Docker to look for the 'Dockerfile' in this folder
-    restart: always
-    env_file:
-      - .env
-    depends_on:
-      - db
-      - cache
 
 volumes:
   pgdata:

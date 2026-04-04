@@ -2,6 +2,8 @@ import asyncio
 import time
 import uuid
 import uuid6
+import os
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,15 +50,26 @@ scheduler = AsyncIOScheduler()
 
 
 async def run_partition_maintenance():
-    """Daily Maintenance Task: Runs the Garbage Collector and Table Creator."""
-    async with engine.begin() as conn:
-        # This creates the 'webhook_events' parent table structure
-        await conn.run_sync(Base.metadata.create_all)
-
-    async with AsyncSessionLocal() as session:
-        manager = PartitionManager(session)
-        await manager.sync_partitions()
-
+    """Daily Maintenance Task with Retry Logic."""
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            
+            async with AsyncSessionLocal() as session:
+                manager = PartitionManager(session)
+                await manager.sync_partitions()
+            
+            logger.info("partition_init_success", message="Database partitions verified.")
+            break # Exit loop on success
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning("partition_init_retry", attempt=attempt+1, error=str(e))
+                await asyncio.sleep(2) # Wait 2 seconds before retrying
+            else:
+                logger.error("partition_init_failed_final", error=str(e))
+                raise # Re-raise if all retries fail
 
 # Initialize Background Worker
 worker = DeliveryWorker()
@@ -66,34 +79,23 @@ worker_task = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global worker_task
-    logger.info("application_startup", message="🚀 Starting Webhook Engine...")
     
+    recovery_task = None
     
-    #Setup OpenTelemetry Tracing (Sends data to Jaeger)
+   # --- CHANGED: Detect if this container is an API or a WORKER ---
+    mode = os.getenv("APP_MODE", "api")
+    logger.info("application_startup", mode=mode, message="🚀 Starting Webhook Engine...")
+    
+    # --- CHANGED: Pointed endpoint to 'jaeger' service name for Docker DNS ---
     resource = Resource(attributes={"service.name": "webhook-engine"})
     provider = TracerProvider(resource=resource)
-
-    # Send traces to localhost:4317 (where your Jaeger container is listening)
-    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True))
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://jaeger:4317", insecure=True))
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
-    logger.info("tracing_init", message=" OpenTelemetry Tracing connected to Jaeger.")
-    # =========================================================
+    logger.info("tracing_init", message="OpenTelemetry Tracing connected to Jaeger.")
 
-    # Database Partitioning & Maintenance logic
-    # This ensures today's table exists immediately on startup
-    try:
-        await run_partition_maintenance()
-        logger.info("partition_init", message="Database partitions verified.")
-    except Exception as e:
-        logger.error("partition_init_failed", error=str(e))
-
-    # Schedule the job to run every night at 00:05 AM
-    scheduler.add_job(run_partition_maintenance, "cron", hour=0, minute=5)
-    scheduler.start()
-
-    #Start Metrics Server (Port 8001)
-    start_metrics_server(port=8001)
+    # --- CHANGED: Start Metrics server on BOTH (API & Workers) so Prometheus can scrape both ---
+    # start_metrics_server(port=8001)
     
     #Check Redis Connection & Update Gauge
     redis_is_ok = await get_redis_status()
@@ -103,38 +105,64 @@ async def lifespan(app: FastAPI):
     else:
         redis_up_gauge.set(0)
         logger.error("redis_error", message="Warning: Redis is not available")
+        
+    # --- CHANGED: API-ONLY RESPONSIBILITIES ---
+    if mode == "api":
+        try:
+            await run_partition_maintenance()
+            logger.info("partition_init", message="Database partitions verified.")
+        except Exception as e:
+            logger.error("partition_init_failed", error=str(e))
 
-    #Start Background Delivery Worker
-    worker_task = asyncio.create_task(worker.start())
+        scheduler.add_job(run_partition_maintenance, "cron", hour=0, minute=5)
+        scheduler.start()
+        
+        # Start the Recovery Sweeper Loop ONLY on the API node
+        async def recovery_loop():
+            while True:
+                try:
+                    await RecoveryService.sweep_stuck_events()
+                except Exception as e:
+                    logger.error("recovery_loop_error", error=str(e))
+                await asyncio.sleep(60)
+        recovery_task = asyncio.create_task(recovery_loop())
+        logger.info("recovery_task_started", message="Stuck event sweeper active.")
+    
 
-    #Start the Recovery Sweeper Loop
-    async def recovery_loop():
-        while True:
-            try:
-                # Runs every 60 seconds
-                await RecoveryService.sweep_stuck_events()
-            except Exception as e:
-                logger.error("recovery_loop_error", error=str(e))
-            await asyncio.sleep(60)
-
-    recovery_task = asyncio.create_task(recovery_loop())
-
+    if mode == "worker":
+        # Only start the delivery loop if we are a dedicated worker
+        worker_task = asyncio.create_task(worker.start())
+        logger.info("worker_task_started", message="Delivery worker loop active.")
+           
     yield  # Application runs here
 
-    logger.info("application_shutdown", message=" Shutting down...")
+    logger.info("application_shutdown", mode=mode, message="Shutting down gracefully...")
 
-    scheduler.shutdown()  # Stop the partition manager
-    recovery_task.cancel()
+   # A. Shutdown Scheduler (API only)
+    if mode == "api" and scheduler.running:
+        scheduler.shutdown()
+        logger.info("scheduler_shutdown", message="Partition maintenance stopped.")
+        
+        
+    if mode == "api" and recovery_task:
+        recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("recovery_task_cancelled", message="Sweeper loop stopped.")
 
-    redis_up_gauge.set(0)
 
-    if worker_task:
+    # C. Cleanup Worker Task (Worker only)
+    if mode == "worker" and worker_task:
         worker_task.cancel()
         try:
             await worker_task
         except asyncio.CancelledError:
             pass
-
+        logger.info("worker_task_cancelled", message="Delivery loop stopped.")
+        
+        
     #Cleanup Connections
     await redis_client.aclose()
     await engine.dispose()
@@ -224,6 +252,7 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
 
 
     now = datetime.now(timezone.utc)
+    event_id = uuid6.uuid7()
     stable_timestamp = now.replace(second=0, microsecond=0)
     
     
@@ -231,7 +260,7 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
     try:
         async with db.begin():
             db_event = WebhookEvent(
-                id=uuid6.uuid7(),
+                id=event_id,
                 idempotency_key=event.idempotency_key,
                 created_at=stable_timestamp,
                 event_type=event.event_type,
@@ -239,40 +268,38 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
             )
             db.add(db_event)
 
-        await db.refresh(db_event)
-
         try:
-            await QueueService.enqueue(db_event.id)
+            await QueueService.enqueue(event_id)
         except Exception as e:
             # We don't crash the request!
             # The Recovery Sweeper will pick this up in 2 minutes.
             logger.warning(
                 "redis_enqueue_failed_background_recovery_will_handle",
-                event_id=db_event.id,
+                event_id=event_id,
                 error=str(e),
             )
             return {
-                "id": db_event.id,
-                "created_at": db_event.created_at.isoformat(),
+                "id": event_id,
+                "created_at": stable_timestamp, # no need to send it is not worth 1 db query
                 "message": "Event queued!",
             }
 
         # 3. Finalize Cache
         await IdempotencyService.check_and_set(
-            idempotency_key=event.idempotency_key, event_id=db_event.id
+            idempotency_key=event.idempotency_key, event_id=event_id
         )
 
         latency_ms = round((time.time() - start_time) * 1000, 2)
         logger.info(
             "webhook_queued",
             correlation_id=correlation_id,
-            event_id=db_event.id,
+            event_id=event_id,
             latency_ms=latency_ms,
         )
 
         return {
-            "id": db_event.id,
-            "created_at": db_event.created_at,
+            "id": event_id,
+            "created_at": stable_timestamp,
             "idempotent": False,
             "message": "Event queued for delivery!",
         }
@@ -352,3 +379,29 @@ async def get_event_attempts(
     return result.scalars().all()
 
 
+if __name__ == "__main__":
+    import uvicorn
+    import os
+
+    mode = os.getenv("APP_MODE", "api")
+    port = int(os.getenv("PORT", 8000))
+
+    if mode == "api":
+        logger.info("starting_api_server", port=port)
+        uvicorn.run(
+            "main:app", 
+            host="0.0.0.0", 
+            port=port, 
+            reload=False,
+            workers=1
+        )
+    else:
+        # --- FIXED: Use uvicorn even for the worker to trigger the lifespan ---
+        logger.info("starting_worker_mode", port=port)
+        uvicorn.run(
+            "main:app", 
+            host="0.0.0.0", 
+            port=port, 
+            reload=False,
+            workers=1
+        )

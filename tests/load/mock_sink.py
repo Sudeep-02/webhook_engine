@@ -7,7 +7,7 @@ app = FastAPI()
 @app.post("/webhook-sink")
 async def sink():
     # Return 200 OK immediately with no body to save bandwidth
-    return Response(status_code=200)
+    return Response(status_code=200) 
 
 if __name__ == "__main__":
     # Run with multiple workers to match your Legion's CPU cores
