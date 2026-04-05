@@ -5,6 +5,7 @@ venv/
 
 # Environment
 .env
+.env.test
 
 # Alembic (keep migrations, ignore compiled)
 alembic/versions/*.pyc
