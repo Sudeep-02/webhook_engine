@@ -15,3 +15,5 @@ alembic/versions/*.pyc
 # IDE
 .vscode/
 .idea/
+
+.txt/
