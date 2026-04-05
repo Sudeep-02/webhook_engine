@@ -2,11 +2,18 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from app.config import settings
 from app.models import Base
 import os
-
+from app.core.logging_config import logger
 
 # Read from Docker environment with sensible fallbacks
-POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "25"))
-MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "50"))
+MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "30"))
+
+logger.info(
+    "db_pool_configured",
+    pool_size=POOL_SIZE,
+    max_overflow=MAX_OVERFLOW,
+    database_url_host=settings.DATABASE_URL.split("@")[1].split(":")[0] if "@" in settings.DATABASE_URL else "unknown",
+)
 
 
 # 1. Create the Async Engine
@@ -19,10 +26,10 @@ engine = create_async_engine(
     pool_recycle=3600,
     pool_pre_ping=True,
     pool_use_lifo=True,
+    echo=False,
 )
 
-# 2. Create a Session Factory
-# In SQLAlchemy 2.0+, 'class_=AsyncSession' is the default for async_sessionmaker
+#Create a Session Factory
 AsyncSessionLocal = async_sessionmaker(
     bind=engine, autocommit=False, autoflush=False, expire_on_commit=False
 )

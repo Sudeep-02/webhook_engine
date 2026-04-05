@@ -1,14 +1,29 @@
 services:
-  pgbouncer:
-    image: edoburu/pgbouncer
-    environment:
-      - DATABASE_URL=postgresql://admin:password@db:5432/webhook_db
-      - POOL_MODE=transaction
-      - MAX_CLIENT_CONN=500
-      - DEFAULT_POOL_SIZE=25
-    ports:
-      - "6432:6432"
-    depends_on: [db]
+  #   pgbouncer:
+  #     image: edoburu/pgbouncer:latest
+  #     environment:
+  #       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/webhook_db
+  #       - POOL_MODE=transaction
+  #       - MAX_CLIENT_CONN=500
+  #       - DEFAULT_POOL_SIZE=300
+  #       - RESERVE_POOL_SIZE=100
+  #       - MIN_POOL_SIZE=150
+  #       - ADMIN_USERS=${DB_USER}
+  #       - ADMIN_PASSWORDS=${DB_PASSWORD}
+  #       - AUTH_TYPE=scram-sha-256 # ✅ ADD THIS LINE (matches Postgres 18)
+  #     ports:
+  #       - "6432:5432" # Keep as 5432 internally if that's what it binds to
+  #     depends_on:
+  #       db:
+  #         condition: service_healthy
+  #     networks:
+  #       - default
+  #     restart: unless-stopped
+  #     healthcheck:
+  #       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -p 5432 -h 127.0.0.1"]
+  #       interval: 10s
+  #       timeout: 5s
+  #       retries: 5
 
   db:
     image: postgres:18-alpine
@@ -55,8 +70,8 @@ services:
     restart: always
     environment:
       - APP_MODE=api
-      - DB_POOL_SIZE=50
-      - DB_MAX_OVERFLOW=30 # Explicitly set API mode
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=2 # Explicitly set API mode
     env_file:
       - .env
     ports:
@@ -73,8 +88,8 @@ services:
     restart: always
     environment:
       - APP_MODE=worker
-      - DB_POOL_SIZE=40
-      - DB_MAX_OVERFLOW=20 # <--- CRITICAL: Tells main.py to run the Delivery Loop
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=10 # <--- CRITICAL: Tells main.py to run the Delivery Loop
     env_file:
       - .env
     depends_on:

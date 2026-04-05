@@ -26,42 +26,53 @@ class EventCreate(BaseModel):
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
+    event_id = uuid6.uuid7()
     correlation_id = get_correlation_id()
-    start_time = time.time()
-
+    request_start = time.time()
+    steps = {}
+    
     logger.info(
         "webhook_received",
         correlation_id=correlation_id,
         event_type=event.event_type,
         idempotency_key=event.idempotency_key,
     )
-
     webhook_received_total.labels(event_type=event.event_type).inc()
 
-    existing_id = await IdempotencyService.get_cached_response(event.idempotency_key)
-    if existing_id:
+    step_start = time.perf_counter()
+    is_first_time = await IdempotencyService.check_and_set(
+        idempotency_key=event.idempotency_key, event_id=event_id
+    )
+    steps["idempotency_check_ms"] = round((time.perf_counter() - step_start) * 1000, 1)
+    
+    if not is_first_time:
         logger.warning(
             "duplicate_request",
             correlation_id=correlation_id,
             key=event.idempotency_key,
         )
-        return {"id": existing_id, "idempotent": True, "message": "Duplicate request"}
-
-    now = datetime.now(timezone.utc)
-    event_id = uuid6.uuid7()
-    stable_timestamp = now.replace(second=0, microsecond=0)
-
+        return {"id": event_id, "idempotent": True, "message": "Duplicate request"}
+        
+    
+    timestamp= datetime.now(timezone.utc) 
+    step_start = time.perf_counter()
+    
+    
     try:
         async with db.begin():
             db_event = WebhookEvent(
                 id=event_id,
                 idempotency_key=event.idempotency_key,
-                created_at=stable_timestamp,
+                created_at=timestamp,
                 event_type=event.event_type,
                 payload=event.payload,
             )
             db.add(db_event)
-
+        steps["db_insert_ms"] = round((time.perf_counter() - step_start) * 1000, 1)
+        
+        
+        step_start = time.perf_counter()
+        # Queue enqueue
         try:
             await QueueService.enqueue(event_id)
         except Exception as e:
@@ -72,24 +83,37 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
             )
             return {
                 "id": event_id,
-                "created_at": stable_timestamp,
+                "created_at":timestamp,
                 "message": "Event queued!",
             }
-
-        await IdempotencyService.check_and_set(
-            idempotency_key=event.idempotency_key, event_id=event_id
-        )
-        latency_ms = round((time.time() - start_time) * 1000, 2)
+        steps["redis_enqueue_ms"] = round((time.perf_counter() - step_start) * 1000, 1)
+      
+      
+        total_latency_ms = round((time.time() - request_start) * 1000, 2)       
+        slow_steps = {k: v for k, v in steps.items() if v > 50}
+        
+        
+        if slow_steps:
+            logger.warning(
+                "slow_request_steps",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                total_latency_ms=total_latency_ms,
+                **slow_steps,
+            )
+            
+            
         logger.info(
             "webhook_queued",
             correlation_id=correlation_id,
             event_id=event_id,
-            latency_ms=latency_ms,
+            latency_ms=total_latency_ms,
+            steps=steps,  # Include all step timings in log
         )
 
         return {
             "id": event_id,
-            "created_at": stable_timestamp,
+            "created_at": timestamp,
             "idempotent": False,
             "message": "Event queued for delivery!",
         }
@@ -101,7 +125,7 @@ async def create_event(event: EventCreate, db: AsyncSession = Depends(get_db)):
                 idempotency_key=event.idempotency_key,
                 correlation_id=correlation_id,
             )
-            search_window = datetime.now(timezone.utc) - timedelta(hours=48)
+            search_window = datetime.now(timezone.utc) - timedelta(hours=24)
             result = await db.execute(
                 select(WebhookEvent.id).where(
                     WebhookEvent.idempotency_key == event.idempotency_key,

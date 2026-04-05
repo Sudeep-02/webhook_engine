@@ -6,11 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes import observability, events
 
 # --- Infrastructure & Services ---
-from app.database import engine, AsyncSessionLocal
+from app.database import engine, AsyncSessionLocal,init_db 
 from app.models import Base
 from app.redis_client import redis_client, get_redis_status
-from app.services.idempotency import IdempotencyService
-from app.services.queue_service import QueueService
 from app.services.recovery_service import RecoveryService
 from app.workers.delivery_worker import DeliveryWorker
 
@@ -37,9 +35,25 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 
 
+async def periodic_l1_cache_cleanup():
+    """
+    Background task: Periodically clean expired entries from IdempotencyService L1 cache.
+    Runs every 30 seconds to prevent memory growth.
+    """
+    from app.services.idempotency import IdempotencyService  # Import here to avoid circular deps
+    
+    while True:
+        try:
+            await IdempotencyService.cleanup_expired_l1_cache()
+        except Exception as e:
+            logger.error("l1_cache_cleanup_failed", error=str(e))
+        await asyncio.sleep(30)  # Run every 30 seconds
+
 scheduler = None
 worker = None
 worker_task = None
+
+
 async def run_partition_maintenance():
 
     max_retries = 5
@@ -70,6 +84,10 @@ async def run_partition_maintenance():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global worker_task, scheduler, worker
+    cache_cleanup_task = None
+    
+    await init_db()
+    print("🚀 Database tables verified/created.")
     
     scheduler = AsyncIOScheduler()
     worker = DeliveryWorker()
@@ -103,7 +121,11 @@ async def lifespan(app: FastAPI):
         redis_up_gauge.set(0)
         logger.error("redis_error", message="Warning: Redis is not available")
 
-    # --- CHANGED: API-ONLY RESPONSIBILITIES ---
+    # ── NEW: Start L1 Cache Cleanup Task (runs on BOTH api and worker nodes) ──
+    cache_cleanup_task = asyncio.create_task(periodic_l1_cache_cleanup())
+    logger.info("l1_cache_cleanup_started", message="Idempotency L1 cache cleanup active.")
+    
+    
     if mode == "api":
         try:
             await run_partition_maintenance()
@@ -156,6 +178,16 @@ async def lifespan(app: FastAPI):
             pass
         logger.info("worker_task_cancelled", message="Delivery loop stopped.")
 
+
+    # Cancel L1 cache cleanup task
+    if cache_cleanup_task:
+        cache_cleanup_task.cancel()
+        try:
+            await cache_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("l1_cache_cleanup_stopped", message="L1 cache cleanup task stopped.")
+        
     # Cleanup Connections
     await redis_client.aclose()
     await engine.dispose()

@@ -4,7 +4,7 @@ from app.redis_client import get_redis_status
 from app.services.queue_service import QueueService
 from app.core.correlation import get_correlation_id
 from app.core.metrics import queue_depth_gauge
-
+from datetime import datetime, timezone
 router = APIRouter()
 
 
@@ -27,3 +27,11 @@ async def get_queue_stats():
     depth = await QueueService.get_queue_depth()
     queue_depth_gauge.set(depth)
     return {"pending_count": depth}
+
+@router.get("/cache-stats")
+async def get_cache_stats():
+    from app.services.idempotency import IdempotencyService
+    return {
+        "idempotency": IdempotencyService.get_cache_stats(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }

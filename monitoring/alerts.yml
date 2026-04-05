@@ -1,0 +1,22 @@
+- alert: IdempotencyRedisLatencyHigh
+  expr: |
+    histogram_quantile(0.95, rate(redis_command_latency_seconds_bucket{command="set_nx"}[5m])) > 0.02
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "95th percentile Redis idempotency SET NX latency > 20ms"
+    description: "Redis may be overloaded or network latency is high"
+
+- alert: IdempotencyL1CacheMissRateHigh
+  expr: |
+    rate(idempotency_l1_cache_hits_total{result="miss"}[5m]) 
+    / 
+    (rate(idempotency_l1_cache_hits_total{result="hit"}[5m]) + rate(idempotency_l1_cache_hits_total{result="miss"}[5m])) 
+    > 0.8
+  for: 5m
+  labels:
+    severity: info
+  annotations:
+    summary: "L1 cache miss rate > 80%"
+    description: "Consider increasing L1 cache size or TTL if hot keys are frequent"
