@@ -71,7 +71,7 @@ services:
     environment:
       - APP_MODE=api
       - DB_POOL_SIZE=20
-      - DB_MAX_OVERFLOW=2 # Explicitly set API mode
+      - DB_MAX_OVERFLOW=10 # Explicitly set API mode
     env_file:
       - .env
     ports:
@@ -88,8 +88,24 @@ services:
     restart: always
     environment:
       - APP_MODE=worker
-      - DB_POOL_SIZE=20
+      - DB_POOL_SIZE=30
       - DB_MAX_OVERFLOW=10 # <--- CRITICAL: Tells main.py to run the Delivery Loop
+      - DB_POOL_TIMEOUT=10.0
+
+      # Tune worker behavior
+      - WORKER_CONCURRENCY=50
+      - WORKER_BATCH_SIZE=20
+      - WORKER_POLL_BASE=0.05
+      - WORKER_POLL_MAX=2.0
+
+      # Cache tuning
+      - SUB_CACHE_TTL=3600
+      - SUB_L1_CACHE_SIZE=500
+      - SUB_L1_CACHE_TTL=60
+
+      # Error handling
+      - ERROR_BACKOFF_BASE=2.0
+      - ERROR_BACKOFF_MAX=30.0
     env_file:
       - .env
     depends_on:
@@ -97,6 +113,7 @@ services:
         condition: service_healthy
       cache:
         condition: service_started
+
   mock_sink:
     build:
       context: .

@@ -7,25 +7,29 @@ from app.core.logging_config import logger
 # Read from Docker environment with sensible fallbacks
 POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "50"))
 MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "30"))
+POOL_TIMEOUT = float(os.getenv("DB_POOL_TIMEOUT", "10.0"))  # ← Increased from 5s to reduce timeout errors
+POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "3600"))
 
 logger.info(
     "db_pool_configured",
     pool_size=POOL_SIZE,
     max_overflow=MAX_OVERFLOW,
-    database_url_host=settings.DATABASE_URL.split("@")[1].split(":")[0] if "@" in settings.DATABASE_URL else "unknown",
+    pool_timeout=POOL_TIMEOUT,
+    database_url_host=(
+        settings.DATABASE_URL.split("@")[1].split(":")[0]
+        if "@" in settings.DATABASE_URL else "unknown"
+    ),
+    note="Set DB_POOL_SIZE/DB_MAX_OVERFLOW in docker-compose.yml for production"
 )
 
-
-# 1. Create the Async Engine
-# Pylance is happy because settings.DATABASE_URL is a guaranteed str
 engine = create_async_engine(
     settings.DATABASE_URL,
-    pool_size=POOL_SIZE,
-    max_overflow=MAX_OVERFLOW,
-    pool_timeout=5.0,
-    pool_recycle=3600,
-    pool_pre_ping=True,
-    pool_use_lifo=True,
+    pool_size=POOL_SIZE,              # DB_POOL_SIZE env var
+    max_overflow=MAX_OVERFLOW,        # DB_MAX_OVERFLOW env var
+    pool_timeout=POOL_TIMEOUT,        # Increased timeout to avoid premature failures
+    pool_recycle=POOL_RECYCLE,        # Prevent stale connections
+    pool_pre_ping=True,               # Detect dropped connections before use
+    pool_use_lifo=True,               # Use last-in-first-out for better cache locality
     echo=False,
 )
 
